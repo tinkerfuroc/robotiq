@@ -94,12 +94,14 @@ Robotiq2FGripperActionServer::Robotiq2FGripperActionServer(const std::string& na
   , as_(nh_, name, false)
   , action_name_(name)
   , gripper_params_(params)
+  , activation_cnt_(- 1)
 {
   as_.registerGoalCallback(boost::bind(&Robotiq2FGripperActionServer::goalCB, this));
   as_.registerPreemptCallback(boost::bind(&Robotiq2FGripperActionServer::preemptCB, this));
 
   state_sub_ = nh_.subscribe("input", 1, &Robotiq2FGripperActionServer::analysisCB, this);
   goal_pub_ = nh_.advertise<GripperOutput>("output", 1);
+  js_pub_ = nh_.advertise<sensor_msgs::JointState>("/joint_states", 1);
 
   as_.start();
 }
@@ -114,6 +116,9 @@ void Robotiq2FGripperActionServer::goalCB()
   }
 
   GripperCommandGoal current_goal (*(as_.acceptNewGoal()));
+  
+  // change moveit joint goal into gripper distance goal
+  current_goal.command.position = (1. - current_goal.command.position / 0.69) * (gripper_params_.max_gap_ - gripper_params_.min_gap_) + gripper_params_.min_gap_;
 
   if (as_.isPreemptRequested())
   {
@@ -140,23 +145,37 @@ void Robotiq2FGripperActionServer::preemptCB()
 void Robotiq2FGripperActionServer::analysisCB(const GripperInput::ConstPtr& msg)
 {
   current_reg_state_ = *msg;
-
-  if (!as_.isActive()) return;
+  ROS_INFO("state: gSTA=%d rACT = %d", current_reg_state_.gSTA, goal_reg_state_.rACT);
 
   // Check to see if the gripper is in its activated state
   if (current_reg_state_.gSTA != 0x3)
   {
     // Check to see if the gripper is active or if it has been asked to be active
-    if (current_reg_state_.gSTA == 0x0 && goal_reg_state_.rACT != 0x1)
+    //if (current_reg_state_.gSTA == 0x0 && goal_reg_state_.rACT != 0x1)
     {
-      // If it hasn't been asked, active it
-      issueActivation();
+      if (activation_cnt_ < 0)
+      {
+        // the gripper needs reset
+        issueReset();
+        activation_cnt_ = 30;
+      }
+      else if (activation_cnt_ > 0)
+      {
+        activation_cnt_--;
+      }
+      else
+      {
+        // reset complete, activate it
+        issueActivation();
+      }
     }
 
     // Otherwise wait for the gripper to activate
     // TODO: If message delivery isn't guaranteed, then we may want to resend activate
     return;
   }
+
+  if (!as_.isActive()) return;
 
   // Check for errors
   if (current_reg_state_.gFLT)
@@ -184,11 +203,41 @@ void Robotiq2FGripperActionServer::analysisCB(const GripperInput::ConstPtr& msg)
   }
 }
 
+void Robotiq2FGripperActionServer::publishJs() const
+{
+  sensor_msgs::JointState js;
+  
+  const double dist_per_tick = (gripper_params_.max_gap_ - gripper_params_.min_gap_) / 255;
+  const double jpos = (1. - current_reg_state_.gPO * dist_per_tick) * 0.7;
+  
+  js.header.stamp = ros::Time::now();
+  js.name.push_back("finger_joint");
+  js.position.push_back(jpos);
+  
+  js_pub_.publish(js);
+}
+
+void Robotiq2FGripperActionServer::issueReset()
+{
+  ROS_INFO("Activating gripper for gripper action server: %s", action_name_.c_str());
+  GripperOutput out;
+  out.rACT = 0x0;
+  out.rGTO = 0x0;
+  out.rFR = 0;
+  out.rSP = 0;
+  // other params should be zero
+  goal_reg_state_ = out;
+  goal_pub_.publish(out);
+}
+
 void Robotiq2FGripperActionServer::issueActivation()
 {
   ROS_INFO("Activating gripper for gripper action server: %s", action_name_.c_str());
   GripperOutput out;
   out.rACT = 0x1;
+  out.rGTO = 0x1;
+  out.rFR = 25;
+  out.rSP = 255;
   // other params should be zero
   goal_reg_state_ = out;
   goal_pub_.publish(out);

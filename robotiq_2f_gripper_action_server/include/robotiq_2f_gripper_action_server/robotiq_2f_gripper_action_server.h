@@ -12,6 +12,7 @@
 #include <ros/ros.h>
 #include <actionlib/server/simple_action_server.h>
 #include <control_msgs/GripperCommandAction.h>
+#include <sensor_msgs/JointState.h>
 // Repo specific includes
 #include <robotiq_2f_gripper_control/Robotiq2FGripper_robot_input.h>
 #include <robotiq_2f_gripper_control/Robotiq2FGripper_robot_output.h>
@@ -58,8 +59,12 @@ public:
   void goalCB();
   void preemptCB();
   void analysisCB(const GripperInput::ConstPtr& msg);
+  
+  // additional function to publish current joint state
+  void publishJs() const;
 
 private:
+  void issueReset();
   void issueActivation();
 
   ros::NodeHandle nh_;
@@ -67,9 +72,12 @@ private:
 
   ros::Subscriber state_sub_; // Subs to grippers "input" topic
   ros::Publisher goal_pub_; // Pubs to grippers "output" topic
+  ros::Publisher js_pub_; // Pubs joint_state
 
   GripperOutput goal_reg_state_; // Goal information in gripper-register form
   GripperInput current_reg_state_; // State info in gripper-register form
+  
+  int activation_cnt_; // activation countdown
 
   /* Used to translate GripperCommands in engineering units
    * to/from register states understood by gripper itself. Different
